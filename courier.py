@@ -1,16 +1,14 @@
 #!/usr/bin/env python
 
+## notes:
+## marshall data to /var/lib/courier/
+## 
+
 import time
 import signal
 import sys
 import os
-
-## Signal handling
-def signal_handler(signal, frame):
-	print("Interrupt caught!")
-	sys.exit(0)
-
-signal.signal(signal.SIGINT, signal_handler)
+import cPickle as pickle
 
 ## Variables
 watchFolder="data"
@@ -23,7 +21,20 @@ print fileExtension
 
 ## Data storage
 fileList = set()
-copiedList = set()
+
+try:
+	copiedList = pickle.load(open("copied_files.pkl", "rb"))
+except IOError:
+	print "Database not found, creating new one."
+	copiedList = set()
+
+## Signal handling
+def signal_handler(signal, frame):
+	print("Interrupt caught!")
+	pickle.dump(copiedList, open("copied_files.pkl", "wb"))
+	sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
 
 ## Main
 def push_file(filename):
