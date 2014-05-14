@@ -49,4 +49,5 @@ docs/_build/
 # repo-specific
 *.db
 data/
+processed/
 *.pkl
