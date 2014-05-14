@@ -2,7 +2,7 @@
 
 ## notes:
 ## marshall data to /var/lib/courier/
-## 
+## add a sighup trap to re-push?
 
 import time
 import signal
@@ -37,12 +37,18 @@ except IOError:
 print "Copied files: %s " % copiedList
 
 ## Signal handling
-def signal_handler(signal, frame):
+def interrupt_handler(signal, frame):
 	print("Interrupt caught!")
 	pickle.dump(copiedList, open("copied_files.pkl", "wb"))
 	sys.exit(0)
 
-signal.signal(signal.SIGINT, signal_handler)
+def hup_handler(signal, frame):
+	global copiedList
+	print("SIGHUP caught, copying all files.")
+	copiedList = copiedList - fileList
+
+signal.signal(signal.SIGINT, interrupt_handler)
+signal.signal(signal.SIGHUP, hup_handler)
 
 ###################
 ## Main
