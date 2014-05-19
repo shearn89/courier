@@ -12,57 +12,78 @@ import shutil
 import cPickle as pickle
 import paramiko
 import scp
+from scp import SCPException
 import socket
 from ConfigParser import SafeConfigParser
 
 ## Variables
 config = SafeConfigParser()
 config.read(['etc/courier.ini','/etc/courier/courier.ini'])
+dbFile = config.get("Courier", "dbFile")
 
-watchFolder = os.path.expanduser(os.path.expandvars(config.get("Courier", "watchFolder")))
-targetFolder = config.get("Courier", "targetFolder")
-remoteFolder = config.get("Courier", "remoteFolder")
-fileExtension = config.get("Courier", "fileExtension")
-targetIP = config.get("Courier", "targetIP")
-move = config.getboolean("Courier", "move")
-flatten = config.getboolean("Courier", "flatten")
+def load_config():
+	global config
+	global watchFolder
+	global targetFolder 
+	global remoteFolder
+	global fileExtension 
+	global targetIP 
+	global move 
+	global flatten 
+	global verb
 
-verb="Processing"
-if move:
-	verb="Moving"
-else:
-	verb="Copying"
+	# load the config
+	config.read(['etc/courier.ini','/etc/courier/courier.ini'])
+	watchFolder = os.path.expanduser(os.path.expandvars(config.get("Courier", "watchFolder")))
+	targetFolder = os.path.expanduser(os.path.expandvars(config.get("Courier", "targetFolder")))
+	remoteFolder = config.get("Courier", "remoteFolder")
+	fileExtension = config.get("Courier", "fileExtension")
+	targetIP = config.get("Courier", "targetIP")
+	move = config.getboolean("Courier", "move")
+	flatten = config.getboolean("Courier", "flatten")
 
-print "Watching:    %s" % watchFolder
-print "Target:      %s" % targetFolder
-print "Extension:   %s" % fileExtension
-print "Moving?      %s" % move
-print "Flatten?     %s" % flatten
-print "Target IP:   %s" % targetIP
+	if move:
+		verb="Moving"
+	else:
+		verb="Copying"
+
+	# print the config:
+	print "Watching:    %s" % watchFolder
+	print "Target:      %s" % targetFolder
+	print "Extension:   %s" % fileExtension
+	print "Moving?      %s" % move
+	print "Flatten?     %s" % flatten
+	print "Target IP:   %s" % targetIP
+
+load_config()
+
+## Signal handling
+def interrupt_handler(signal, frame):
+	print "Exit requested, saving file list."
+	pickle.dump(copiedList, open(dbFile, "wb"))
+	print "Goodbye!"
+	sys.exit(0)
+
+def hup_handler(signal, frame):
+	global copiedList
+	print verb
+	load_config()
+	print verb
+	print "SIGHUP caught. Reloading config, and %s all files still in %s" % (verb, watchFolder)
+	copiedList = copiedList - fileList
+
 
 ## Data storage
 fileList = set()
 
 ## Initialise copied list
 try:
-	copiedList = pickle.load(open("copied_files.pkl", "rb"))
+	copiedList = pickle.load(open(dbFile, "rb"))
 except IOError:
 	print "Database not found, creating new one."
 	copiedList = set()
 
 print "Copied files: %s " % copiedList
-
-## Signal handling
-def interrupt_handler(signal, frame):
-	print "Exit requested, saving file list."
-	pickle.dump(copiedList, open("copied_files.pkl", "wb"))
-	print "Goodbye!"
-	sys.exit(0)
-
-def hup_handler(signal, frame):
-	global copiedList
-	print "SIGHUP caught. %s all files still in %s" % (verb, watchFolder)
-	copiedList = copiedList - fileList
 
 signal.signal(signal.SIGHUP, hup_handler) # 1
 signal.signal(signal.SIGINT, interrupt_handler) # 2
@@ -80,23 +101,46 @@ def push_file(filename):
 	if flatten:
 		targetFile=os.path.join(targetFolder,os.path.split(filename)[1])
 	else:
-		subpath=os.path.split(file)[0]
-		targetPath=os.path.join(targetFolder,subpath)
-		targetFile=os.path.join(targetFolder,file)
+		subpath=file[len(watchFolder):]
+		targetFile=os.path.join(targetFolder,subpath)
+		targetPath=os.path.dirname(targetFile)
 		try:
 			print "Creating directory %s " % targetPath
 			os.makedirs(targetPath)
 		except OSError:
 			if not os.path.isdir(targetPath):
 				raise
-	if move:
-		shutil.move(filename,targetFile)
-	else:
-		shutil.copy(filename,targetFile)
+	shutil.copy(filename,targetFile)
 	if actualssh:
+		remoteDir=os.path.dirname(remoteFile)
 		print "Sending %s to %s" % (filename, remoteFile)
-		scp.put(filename,remoteFile)
+		try:
+			scp.put(filename,remoteFile)
+		except SCPException as e:
+			try:
+				print "Creating remote directory ",remoteDir
+				ssh.exec_command("mkdir "+remoteDir)
+				scp.put(filename,remoteFile)
+			except:
+				print "Error sending file/creating remote directory! Exiting."
+				sys.exit(1)
+	if move:
+		try:
+			os.remove(filename)
+		except OSError as e:
+			if e.errno == 2:
+				pass # file doesn't exist
+			else:
+				raise
 	copiedList.add(filename)
+
+def walk_error(error):
+	if error.errno == 2:
+		print error.strerror, error.filename
+		sys.exit(1)
+	else:
+		print error.errno
+		print error.strerror
 
 ## Initialise SSH conection
 actualssh=True
@@ -123,9 +167,7 @@ if actualssh:
 print "Beginning monitoring..."
 while True:
 	time.sleep(1)
-	# sys.stdout.write(".")
-	# sys.stdout.flush()
-	for root, dirs, files in os.walk(watchFolder):
+	for root, dirs, files in os.walk(watchFolder,onerror=walk_error):
 		for file in files:
 			if file.endswith(fileExtension):
 				fn=os.path.join(root, file)
